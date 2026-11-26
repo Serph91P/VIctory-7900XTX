@@ -180,6 +180,9 @@ pub fn flow(
                         line(&format!("{here}:{n} {c:?} pso {pso} {name}"));
                         if !compute {
                             line(&format!("  targets {targets}"));
+                            if let Some(p) = pipelines.get(&pso) {
+                                state_lines(p, line);
+                            }
                         }
                         for ((graphics, param), (text, values)) in &binds {
                             if *graphics == compute {
@@ -213,6 +216,99 @@ pub fn flow(
         }
     }
     Ok(())
+}
+
+/// A graphics pipeline's blending, depth and stencil, rasterizer state and
+/// sample mask, as they were given to the device.
+fn state_lines(p: &wire::Pipeline, line: &mut dyn FnMut(&str)) {
+    fn read<T>(data: &[u8]) -> Option<T> {
+        // SAFETY: the length is checked; the types are plain D3D12 structures.
+        (data.len() >= size_of::<T>())
+            .then(|| unsafe { data.as_ptr().cast::<T>().read_unaligned() })
+    }
+    for part in &p.parts {
+        let wire::Part::Plain { kind, data } = part else {
+            continue;
+        };
+        let data = &data.0[..];
+        match *kind {
+            8 => {
+                let Some(b) = read::<D3D12_BLEND_DESC>(data) else {
+                    continue;
+                };
+                line(&format!(
+                    "  blend alpha-to-coverage {} independent {}",
+                    b.AlphaToCoverageEnable.as_bool(),
+                    b.IndependentBlendEnable.as_bool()
+                ));
+                for (i, t) in b.RenderTarget.iter().enumerate() {
+                    if t.BlendEnable.as_bool()
+                        || t.LogicOpEnable.as_bool()
+                        || t.RenderTargetWriteMask != 15
+                    {
+                        line(&format!(
+                            "    rt{i} blend {} colour {}*src {} {}*dst, alpha {}*src {} {}*dst, logic {} {}, mask {:#x}",
+                            t.BlendEnable.as_bool(),
+                            t.SrcBlend.0,
+                            t.BlendOp.0,
+                            t.DestBlend.0,
+                            t.SrcBlendAlpha.0,
+                            t.BlendOpAlpha.0,
+                            t.DestBlendAlpha.0,
+                            t.LogicOpEnable.as_bool(),
+                            t.LogicOp.0,
+                            t.RenderTargetWriteMask
+                        ));
+                    }
+                }
+            }
+            9 => {
+                if let Some(m) = read::<u32>(data) {
+                    line(&format!("  sample mask {m:#x}"));
+                }
+            }
+            10 => {
+                if let Some(r) = read::<D3D12_RASTERIZER_DESC>(data) {
+                    line(&format!(
+                        "  rasterizer fill {} cull {} ccw {} bias {} {} {} clip {}",
+                        r.FillMode.0,
+                        r.CullMode.0,
+                        r.FrontCounterClockwise.as_bool(),
+                        r.DepthBias,
+                        r.DepthBiasClamp,
+                        r.SlopeScaledDepthBias,
+                        r.DepthClipEnable.as_bool()
+                    ));
+                }
+            }
+            11 | 21 => {
+                if let Some(d) = read::<D3D12_DEPTH_STENCIL_DESC>(data) {
+                    line(&format!(
+                        "  depth {} write {} func {} stencil {} read {:#x} write {:#x} front {:?} back {:?}",
+                        d.DepthEnable.as_bool(),
+                        d.DepthWriteMask.0,
+                        d.DepthFunc.0,
+                        d.StencilEnable.as_bool(),
+                        d.StencilReadMask,
+                        d.StencilWriteMask,
+                        (
+                            d.FrontFace.StencilFailOp.0,
+                            d.FrontFace.StencilDepthFailOp.0,
+                            d.FrontFace.StencilPassOp.0,
+                            d.FrontFace.StencilFunc.0
+                        ),
+                        (
+                            d.BackFace.StencilFailOp.0,
+                            d.BackFace.StencilDepthFailOp.0,
+                            d.BackFace.StencilPassOp.0,
+                            d.BackFace.StencilFunc.0
+                        )
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 fn half(b: &[u8]) -> f32 {
