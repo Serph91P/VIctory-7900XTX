@@ -443,6 +443,13 @@ impl Player {
     ) {
         let Some(r) = self.texture(id) else { return };
         let depth = r.desc.flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL.0 != 0;
+        // A depth texture's texels are read from the copy of its depth plane,
+        // in that plane's format (R32 of R32G8X24: 4 bytes, not 8).
+        let format = if depth {
+            t.copied_as.get(&id).copied().unwrap_or(r.desc.format)
+        } else {
+            r.desc.format
+        };
         for &(res, at, x, y) in &p.texels {
             if res == id && (sub == at || sub == ALL) {
                 out.push(Spot {
@@ -452,7 +459,7 @@ impl Player {
                     y,
                     z: 0,
                     point: OWN,
-                    format: r.desc.format,
+                    format,
                     depth,
                 });
             }
@@ -472,7 +479,7 @@ impl Player {
                     y,
                     z: 0,
                     point,
-                    format: r.desc.format,
+                    format,
                     depth,
                 });
             }
@@ -643,6 +650,11 @@ impl Player {
                             continue;
                         };
                         let depth = s.kind == slot::DSV;
+                        // (read from the copy of the depth plane, as in `spots_of`)
+                        let format = match depth {
+                            true => t.copied_as.get(&s.res).copied().unwrap_or(format),
+                            false => format,
+                        };
                         let spot = |x, y, point| Spot {
                             res: s.res,
                             sub,
